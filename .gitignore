@@ -1,0 +1,45 @@
+# dependencies
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+
+# dotenv
+.env
+.env.*.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IDEs
+.idea
+.cursor/
+.vscode/
+
+# OS
+.DS_Store
+
+# Vault data (NEVER commit)
+*.db
+*.db-shm
+*.db-wal
+keyring.json
+
+# Dev artifacts (local only)
+.devagents/
+.devtmp/
+.claude/
+CLAUDE.local.md
