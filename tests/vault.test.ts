@@ -5,7 +5,9 @@ import { unlinkSync, existsSync } from "node:fs";
 const TEST_DB = "/tmp/agent-auth-test-vault.db";
 
 // Force file-only keychain backend in tests (no macOS Keychain dialogs)
+// AND isolate keyring file so tests never touch ~/.agent-auth/keyring.json
 process.env.AGENT_AUTH_NO_KEYCHAIN = "1";
+process.env.AGENT_AUTH_CONFIG_DIR = "/tmp/agent-auth-test-config";
 
 describe("VaultStore", () => {
   let vault: VaultStore;

@@ -15,8 +15,18 @@ import { execSync } from "node:child_process";
  */
 
 const SERVICE_NAME = "agent-auth";
-const CONFIG_DIR = join(homedir(), ".agent-auth");
-const KEYRING_FILE = join(CONFIG_DIR, "keyring.json");
+
+/**
+ * Resolve config dir at call time so AGENT_AUTH_CONFIG_DIR (set in tests
+ * or alternate environments) is always honoured.
+ */
+function configDir(): string {
+  return process.env.AGENT_AUTH_CONFIG_DIR ?? join(homedir(), ".agent-auth");
+}
+
+function keyringFile(): string {
+  return join(configDir(), "keyring.json");
+}
 
 type KeyringBackend = "macos-keychain" | "linux-secret-tool" | "file";
 
@@ -54,22 +64,22 @@ function detectBackend(): KeyringBackend {
 }
 
 function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  if (!existsSync(configDir())) {
+    mkdirSync(configDir(), { recursive: true, mode: 0o700 });
   }
 }
 
 function readFileKeyring(): Record<string, KeyringEntry> {
   ensureConfigDir();
-  if (!existsSync(KEYRING_FILE)) return {};
-  const raw = readFileSync(KEYRING_FILE, "utf-8");
+  if (!existsSync(keyringFile())) return {};
+  const raw = readFileSync(keyringFile(), "utf-8");
   return JSON.parse(raw);
 }
 
 function writeFileKeyring(data: Record<string, KeyringEntry>): void {
   ensureConfigDir();
-  writeFileSync(KEYRING_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
-  chmodSync(KEYRING_FILE, 0o600);
+  writeFileSync(keyringFile(), JSON.stringify(data, null, 2), { mode: 0o600 });
+  chmodSync(keyringFile(), 0o600);
 }
 
 export function storeKey(profile: string, key: Buffer, salt: Buffer): void {
@@ -193,5 +203,5 @@ export function deleteKey(profile: string): void {
 
 export function getConfigDir(): string {
   ensureConfigDir();
-  return CONFIG_DIR;
+  return configDir();
 }

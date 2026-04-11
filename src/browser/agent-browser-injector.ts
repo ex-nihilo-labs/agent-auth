@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import type { BrowserStep } from "./steps.js";
 import { InjectionError } from "../errors.js";
 
@@ -28,18 +28,20 @@ export class AgentBrowserInjector {
     steps: BrowserStep[],
     targetUrl: string
   ): Promise<{ finalUrl: string; success: boolean }> {
-    // Navigate if not already on target
-    const currentUrl = this.eval("window.location.href").replace(/^"|"$/g, "");
-    if (!currentUrl.startsWith(targetUrl.split("?")[0]!)) {
-      this.run(`open ${JSON.stringify(targetUrl)} --headed`);
-      this.wait(3000);
+    // Navigate if not already on target (compare hostname+path, not query)
+    const currentUrl = this.evalJs("window.location.href").replace(/^"|"$/g, "");
+    const targetHost = new URL(targetUrl).host;
+    const currentHost = (() => { try { return new URL(currentUrl).host; } catch { return ""; } })();
+    if (currentHost !== targetHost) {
+      this.cmd(["open", targetUrl, "--headed"]);
+      this.cmd(["wait", "3000"]);
     }
 
     for (const step of steps) {
       await this.executeStep(step);
     }
 
-    const finalUrl = this.eval("window.location.href").replace(/^"|"$/g, "");
+    const finalUrl = this.evalJs("window.location.href").replace(/^"|"$/g, "");
     return { finalUrl, success: true };
   }
 
@@ -47,72 +49,60 @@ export class AgentBrowserInjector {
     switch (step.action) {
       case "fill":
       case "type": {
-        // Inject via JS eval — value never appears in shell args or snapshots
-        const js = `
-          (() => {
-            const el = document.querySelector(${JSON.stringify(step.selector)});
-            if (!el) throw new Error('Element not found: ' + ${JSON.stringify(step.selector)});
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-            if (nativeInputValueSetter) {
-              nativeInputValueSetter.call(el, ${JSON.stringify(step.value)});
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            } else {
-              el.value = ${JSON.stringify(step.value)};
-            }
-            return 'ok';
-          })()
-        `;
-        const result = this.eval(js);
-        if (result.includes("Error")) {
-          throw new InjectionError("element_not_found", `Fill failed: ${result}`, step.selector);
-        }
+        // Inject via JS eval — value passed as a single argv item, not via shell
+        const js =
+          `(()=>{` +
+          `const el=document.querySelector(${JSON.stringify(step.selector)});` +
+          `if(!el)throw new Error('Element not found: '+${JSON.stringify(step.selector)});` +
+          `const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
+          `setter.call(el,${JSON.stringify(step.value)});` +
+          `el.dispatchEvent(new Event('input',{bubbles:true}));` +
+          `el.dispatchEvent(new Event('change',{bubbles:true}));` +
+          `return 'ok';` +
+          `})()`;
+        this.evalJs(js);
         break;
       }
 
       case "click": {
-        this.run(`click ${JSON.stringify(step.selector)}`);
+        this.cmd(["click", step.selector]);
         break;
       }
 
       case "wait": {
         if (step.selector) {
-          this.run(`wait ${JSON.stringify(step.selector)}`);
+          this.cmd(["wait", step.selector]);
         } else {
-          this.wait(step.timeout ?? 5000);
+          this.cmd(["wait", String(step.timeout ?? 5000)]);
         }
         break;
       }
 
       case "select": {
-        this.run(`select ${JSON.stringify(step.selector)} ${JSON.stringify(step.value)}`);
+        this.cmd(["select", step.selector, step.value]);
         break;
       }
     }
   }
 
-  private eval(js: string): string {
-    try {
-      return execSync(`${this.bin} eval ${JSON.stringify(js)}`, {
-        encoding: "utf-8",
-        timeout: 10000,
-      }).trim();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new InjectionError("not_connected", `agent-browser eval failed: ${msg}`);
-    }
+  /** Run agent-browser eval <js>. Returns stdout. */
+  private evalJs(js: string): string {
+    return this.cmd(["eval", js]);
   }
 
-  private run(args: string): void {
-    try {
-      execSync(`${this.bin} ${args}`, { encoding: "utf-8", timeout: 15000 });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new InjectionError("not_connected", `agent-browser command failed: ${msg}`);
+  /** Run an agent-browser subcommand. Argv passed directly — no shell. */
+  private cmd(args: string[]): string {
+    const result = spawnSync(this.bin, args, {
+      encoding: "utf-8",
+      timeout: 30000,
+    });
+    if (result.error) {
+      throw new InjectionError("not_connected", `agent-browser spawn failed: ${result.error.message}`);
     }
-  }
-
-  private wait(ms: number): void {
-    execSync(`${this.bin} wait ${ms}`, { encoding: "utf-8", timeout: ms + 5000 });
+    if (result.status !== 0) {
+      const stderr = (result.stderr || "").trim();
+      throw new InjectionError("not_connected", `agent-browser ${args[0]} failed: ${stderr}`);
+    }
+    return (result.stdout || "").trim();
   }
 }
