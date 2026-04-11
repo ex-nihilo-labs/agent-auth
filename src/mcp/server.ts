@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { VaultStore } from "../vault/store.js";
 import { BrowserInjector } from "../browser/injector.js";
+import { AgentBrowserInjector } from "../browser/agent-browser-injector.js";
 import { resolvePlaceholders, hasPlaceholders } from "../placeholder/resolver.js";
 import { isDomainAllowed } from "../security/domains.js";
 import { validateServiceName } from "../security/validator.js";
@@ -110,7 +111,9 @@ export async function startServer(config: {
 
   const rateLimiter = vault.createRateLimiter();
   const approvalGate = vault.createApprovalGate();
-  const injector = config.cdpUrl ? new BrowserInjector({ cdpUrl: config.cdpUrl }) : null;
+  const injector = config.cdpUrl
+    ? new BrowserInjector({ cdpUrl: config.cdpUrl })
+    : new AgentBrowserInjector();
   const allowedServices = config.allowedServices ?? null; // null = unrestricted
 
   const cleanupInterval = setInterval(() => {
@@ -140,7 +143,6 @@ export async function startServer(config: {
       const guardError = guardChecks(vault, rateLimiter, "secure_login", args.service, args.url, allowedServices);
       if (guardError) return reply(guardError);
 
-      if (!injector) return reply("Browser injector not configured. Set CDP_URL.");
 
       const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);
       if (approvalError) return reply(approvalError);
