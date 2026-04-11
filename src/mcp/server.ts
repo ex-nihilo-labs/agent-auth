@@ -90,14 +90,20 @@ async function checkApproval(
 
 export async function startServer(config: {
   cdpUrl?: string;
+  derivedKey?: Buffer;
   passphrase?: Buffer;
   allowedServices?: Set<string>;
 }): Promise<void> {
   const vault = new VaultStore();
 
-  if (config.passphrase) {
+  if (config.derivedKey) {
+    if (!vault.unlockWithKey(config.derivedKey)) {
+      console.error("Failed to unlock vault with keychain key — key may be stale. Re-run `agent-auth init` or set AGENT_AUTH_PASSPHRASE.");
+      process.exit(1);
+    }
+  } else if (config.passphrase) {
     if (!vault.unlock(config.passphrase)) {
-      console.error("Failed to unlock vault");
+      console.error("Failed to unlock vault with passphrase.");
       process.exit(1);
     }
   }

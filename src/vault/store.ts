@@ -119,6 +119,20 @@ export class VaultStore {
   }
 
   /**
+   * Unlock the vault directly with a pre-derived key (e.g. loaded from OS keychain).
+   * Preferred over unlock(passphrase) for unattended server startup — no passphrase in memory.
+   */
+  unlockWithKey(derivedKey: Buffer): boolean {
+    if (!this.verifyKey(derivedKey)) {
+      zeroBuffer(derivedKey);
+      return false;
+    }
+    this.vaultKey = derivedKey;
+    this.touchAccess();
+    return true;
+  }
+
+  /**
    * Unlock the vault with a passphrase.
    * Derives the key and verifies it against the stored token.
    */

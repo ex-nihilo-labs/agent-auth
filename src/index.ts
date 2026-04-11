@@ -24,27 +24,25 @@ switch (command) {
 
     const cdpUrl = env.AGENT_AUTH_CDP_URL;
 
-    // Resolve passphrase: keychain first, env var fallback (dev only)
+    // Unlock strategy (in order):
+    // 1. Derived key from OS keychain — preferred; no passphrase ever in memory
+    // 2. AGENT_AUTH_PASSPHRASE env var — dev/CI fallback only
+    let derivedKey: Buffer | undefined;
     let passphrase: Buffer | undefined;
-    try {
-      const { execSync } = await import("node:child_process");
-      const keychainPass = execSync(
-        'security find-generic-password -s "agent-auth" -a "mcp-passphrase" -w 2>/dev/null',
-        { encoding: "utf-8" }
-      ).trim();
-      if (keychainPass) passphrase = Buffer.from(keychainPass);
-    } catch {
-      // Keychain unavailable — try env var as fallback
-      if (env.AGENT_AUTH_PASSPHRASE) {
-        passphrase = Buffer.from(env.AGENT_AUTH_PASSPHRASE);
-      }
+
+    const { loadKey } = await import("./vault/keychain.js");
+    const loaded = loadKey("default");
+    if (loaded?.key) {
+      derivedKey = loaded.key;
+    } else if (env.AGENT_AUTH_PASSPHRASE) {
+      passphrase = Buffer.from(env.AGENT_AUTH_PASSPHRASE);
     }
 
     const allowedServices = env.AGENT_AUTH_ALLOWED_SERVICES
       ? new Set(env.AGENT_AUTH_ALLOWED_SERVICES.split(",").map((s) => s.trim()).filter(Boolean))
       : undefined;
 
-    await startServer({ cdpUrl, passphrase, allowedServices });
+    await startServer({ cdpUrl, derivedKey, passphrase, allowedServices });
     break;
   }
 
