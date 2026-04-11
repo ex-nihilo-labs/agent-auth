@@ -22,6 +22,11 @@ const ServeEnvSchema = z.object({
    * Example: "github,aws-dev" — this instance can only use those two credentials.
    */
   AGENT_AUTH_ALLOWED_SERVICES: z.string().optional(),
+  /**
+   * Skip the human approval gate. Set to "1" for unattended MCP server use.
+   * Claude Code's own tool-use confirmation serves as the human gate in that context.
+   */
+  AGENT_AUTH_NO_APPROVAL: z.string().optional(),
 });
 
 export type ServeEnv = z.infer<typeof ServeEnvSchema>;

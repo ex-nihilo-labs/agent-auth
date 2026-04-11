@@ -94,6 +94,7 @@ export async function startServer(config: {
   derivedKey?: Buffer;
   passphrase?: Buffer;
   allowedServices?: Set<string>;
+  noApproval?: boolean;
 }): Promise<void> {
   const vault = new VaultStore();
 
@@ -144,8 +145,10 @@ export async function startServer(config: {
       if (guardError) return reply(guardError);
 
 
-      const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);
-      if (approvalError) return reply(approvalError);
+      if (!config.noApproval) {
+        const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);
+        if (approvalError) return reply(approvalError);
+      }
 
       const secrets = vault.resolveSecrets(args.service);
       if (!secrets) return reply(`Credential "${args.service}" not found in vault.`);
@@ -239,8 +242,10 @@ export async function startServer(config: {
       const guardError = guardChecks(vault, rateLimiter, "auth_api", args.service, args.url, allowedServices);
       if (guardError) return reply(guardError);
 
-      const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);
-      if (approvalError) return reply(approvalError);
+      if (!config.noApproval) {
+        const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);
+        if (approvalError) return reply(approvalError);
+      }
 
       try {
         const resp = await proxyRequest(vault, args.service, {

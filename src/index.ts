@@ -42,7 +42,9 @@ switch (command) {
       ? new Set(env.AGENT_AUTH_ALLOWED_SERVICES.split(",").map((s) => s.trim()).filter(Boolean))
       : undefined;
 
-    await startServer({ cdpUrl, derivedKey, passphrase, allowedServices });
+    const noApproval = !!env.AGENT_AUTH_NO_APPROVAL;
+
+    await startServer({ cdpUrl, derivedKey, passphrase, allowedServices, noApproval });
     break;
   }
 
