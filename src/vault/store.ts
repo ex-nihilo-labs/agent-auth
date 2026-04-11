@@ -134,39 +134,43 @@ export class VaultStore {
 
   /**
    * Unlock the vault with a passphrase.
-   * Derives the key and verifies it against the stored token.
+   * Tries the keychain/file salt first, then falls back to the salt stored in the DB.
+   * This handles the case where the keyring and vault DB have drifted (e.g. re-init).
    */
   unlock(passphrase: Buffer): boolean {
-    // Resolve salt: try keychain first, then DB fallback
-    let salt: Buffer | null = null;
+    const saltsToTry: Buffer[] = [];
 
     const stored = loadKey(DEFAULT_PROFILE);
-    if (stored?.salt) {
-      salt = stored.salt;
-    } else {
-      // Keychain unavailable — read salt from DB
-      const row = this.db.query("SELECT value FROM meta WHERE key = 'salt'").get() as
-        | { value: string }
-        | null;
-      if (row) salt = Buffer.from(row.value, "base64");
+    if (stored?.salt) saltsToTry.push(stored.salt);
+
+    // Always try DB salt — it's the ground truth
+    const dbRow = this.db.query("SELECT value FROM meta WHERE key = 'salt'").get() as
+      | { value: string }
+      | null;
+    if (dbRow) {
+      const dbSalt = Buffer.from(dbRow.value, "base64");
+      // Only add if different from keyring salt (avoid duplicate derivation)
+      if (!saltsToTry.some((s) => s.equals(dbSalt))) saltsToTry.push(dbSalt);
     }
 
-    if (!salt) {
+    if (saltsToTry.length === 0) {
       zeroBuffer(passphrase);
       return false;
     }
 
-    const { key } = deriveKey(passphrase, salt);
-    zeroBuffer(passphrase);
-
-    if (!this.verifyKey(key)) {
+    for (const salt of saltsToTry) {
+      const { key } = deriveKey(passphrase, salt);
+      if (this.verifyKey(key)) {
+        zeroBuffer(passphrase);
+        this.vaultKey = key;
+        this.touchAccess();
+        return true;
+      }
       zeroBuffer(key);
-      return false;
     }
 
-    this.vaultKey = key;
-    this.touchAccess();
-    return true;
+    zeroBuffer(passphrase);
+    return false;
   }
 
   /**
@@ -314,6 +318,17 @@ export class VaultStore {
 
     if (!row) return [];
     return JSON.parse(row.allowed_domains);
+  }
+
+  /**
+   * Update the allowed domains for a credential.
+   */
+  updateDomains(service: string, domains: string[]): boolean {
+    const result = this.db.run(
+      "UPDATE credentials SET allowed_domains = ?, updated_at = unixepoch() WHERE service = ?",
+      [JSON.stringify(domains), service]
+    );
+    return result.changes > 0;
   }
 
   /**

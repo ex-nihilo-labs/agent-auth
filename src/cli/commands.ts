@@ -1,5 +1,5 @@
 import { VaultStore } from "../vault/store.js";
-import { ApprovalGate } from "../approval/gate.js";
+import { loadKey } from "../vault/keychain.js";
 import { validateTOTPSeed } from "../totp/totp.js";
 import { validateServiceName } from "../security/validator.js";
 
@@ -19,6 +19,21 @@ function readLine(prompt: string): string {
   const buf = Buffer.alloc(1024);
   const bytesRead = require("fs").readSync(0, buf, 0, 1024);
   return buf.toString("utf-8", 0, bytesRead).trim();
+}
+
+/**
+ * Unlock vault using keychain-stored derived key, or prompt for passphrase as fallback.
+ */
+function unlockVault(vault: VaultStore): boolean {
+  // Try keychain-stored derived key first (no passphrase needed)
+  const loaded = loadKey("default");
+  if (loaded?.key) {
+    return vault.unlockWithKey(loaded.key);
+  }
+  // Fall back to env var, then interactive prompt
+  const envPass = process.env.AGENT_AUTH_PASSPHRASE;
+  const pass = envPass ? Buffer.from(envPass) : readSecret("Vault passphrase: ");
+  return vault.unlock(pass);
 }
 
 function readSecret(prompt: string): Buffer {
@@ -78,14 +93,9 @@ export async function runCLI(args: string[]): Promise<void> {
           process.exit(1);
         }
 
-        // Unlock vault
-        if (!vault.isUnlocked()) {
-          const envPass = process.env.AGENT_AUTH_PASSPHRASE;
-          const pass = envPass ? Buffer.from(envPass) : readSecret("Vault passphrase: ");
-          if (!vault.unlock(pass)) {
-            console.error("Failed to unlock vault. Wrong passphrase?");
-            process.exit(1);
-          }
+        if (!vault.isUnlocked() && !unlockVault(vault)) {
+          console.error("Failed to unlock vault.");
+          process.exit(1);
         }
 
         // Support non-interactive add via flags: --username, --password, --totp, --domains
@@ -138,13 +148,9 @@ export async function runCLI(args: string[]): Promise<void> {
       }
 
       case "list": {
-        if (!vault.isUnlocked()) {
-          const envPass = process.env.AGENT_AUTH_PASSPHRASE;
-          const pass = envPass ? Buffer.from(envPass) : readSecret("Vault passphrase: ");
-          if (!vault.unlock(pass)) {
-            console.error("Failed to unlock vault.");
-            process.exit(1);
-          }
+        if (!vault.isUnlocked() && !unlockVault(vault)) {
+          console.error("Failed to unlock vault.");
+          process.exit(1);
         }
 
         const creds = vault.listCredentials();
@@ -169,12 +175,9 @@ export async function runCLI(args: string[]): Promise<void> {
           process.exit(1);
         }
 
-        if (!vault.isUnlocked()) {
-          const pass = readSecret("Vault passphrase: ");
-          if (!vault.unlock(pass)) {
-            console.error("Failed to unlock vault.");
-            process.exit(1);
-          }
+        if (!vault.isUnlocked() && !unlockVault(vault)) {
+          console.error("Failed to unlock vault.");
+          process.exit(1);
         }
 
         const confirm = readLine(`Remove credential "${service}"? (yes/no): `);
@@ -198,12 +201,9 @@ export async function runCLI(args: string[]): Promise<void> {
           process.exit(1);
         }
 
-        if (!vault.isUnlocked()) {
-          const pass = readSecret("Vault passphrase: ");
-          if (!vault.unlock(pass)) {
-            console.error("Failed to unlock vault.");
-            process.exit(1);
-          }
+        if (!vault.isUnlocked() && !unlockVault(vault)) {
+          console.error("Failed to unlock vault.");
+          process.exit(1);
         }
 
         const current = vault.getAllowedDomains(service);
@@ -212,11 +212,7 @@ export async function runCLI(args: string[]): Promise<void> {
         const input = readLine("New domains (comma-separated, or empty to keep): ");
         if (input) {
           const newDomains = input.split(",").map((d) => d.trim()).filter(Boolean);
-          // Update domains directly in DB
-          vault["db"].run(
-            "UPDATE credentials SET allowed_domains = ?, updated_at = unixepoch() WHERE service = ?",
-            [JSON.stringify(newDomains), service]
-          );
+          vault.updateDomains(service, newDomains);
           console.log(`Domains updated: ${newDomains.join(", ")}`);
         }
         break;
@@ -229,7 +225,7 @@ export async function runCLI(args: string[]): Promise<void> {
           process.exit(1);
         }
 
-        const gate = new ApprovalGate(vault["db"]);
+        const gate = vault.createApprovalGate();
         if (gate.approve(code)) {
           console.log("Approved.");
         } else {
