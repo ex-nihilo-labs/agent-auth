@@ -14,7 +14,7 @@ export class VaultError extends Error {
 }
 
 export class InjectionError extends Error {
-  readonly code: "not_connected" | "no_context" | "element_not_found" | "navigation_failed";
+  readonly code: "not_connected" | "no_context" | "element_not_found" | "navigation_failed" | "ssrf_redirect";
   readonly selector?: string;
 
   constructor(code: InjectionError["code"], message: string, selector?: string) {

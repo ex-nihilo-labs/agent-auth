@@ -5,13 +5,12 @@ import { VaultStore } from "../vault/store.js";
 import { BrowserInjector } from "../browser/injector.js";
 import { resolvePlaceholders, hasPlaceholders } from "../placeholder/resolver.js";
 import { isDomainAllowed } from "../security/domains.js";
-import { RateLimiter } from "../security/rate-limiter.js";
 import { validateServiceName } from "../security/validator.js";
 import { audit } from "../audit/logger.js";
 import { zeroBuffer } from "../vault/crypto.js";
-import { ApprovalGate } from "../approval/gate.js";
 import { proxyRequest } from "../proxy/proxy.js";
-import type { BrowserStep } from "../browser/steps.js";
+import { BrowserSteps, type BrowserStep } from "../browser/steps.js";
+import type { ApprovalGate } from "../approval/gate.js";
 
 /**
  * agent-auth MCP server.
@@ -35,10 +34,11 @@ function reply(text: string) {
  */
 function guardChecks(
   vault: VaultStore,
-  rateLimiter: RateLimiter,
+  rateLimiter: ReturnType<VaultStore["createRateLimiter"]>,
   toolName: string,
   service: string,
   url: string,
+  allowedServices: Set<string> | null,
 ): string | null {
   const rateCheck = rateLimiter.check(toolName);
   if (!rateCheck.allowed) {
@@ -50,6 +50,12 @@ function guardChecks(
   if (!nameCheck.valid) return `Invalid service name: ${nameCheck.reason}`;
 
   if (!vault.isUnlocked()) return "Vault is locked. Human must unlock first.";
+
+  // Scope check: is this service available to this server instance?
+  if (allowedServices !== null && !allowedServices.has(service)) {
+    audit("service_blocked", { service, success: false });
+    return `Service "${service}" is not available to this instance.`;
+  }
 
   const allowedDomains = vault.getAllowedDomains(service);
   if (!isDomainAllowed(url, allowedDomains)) {
@@ -85,9 +91,9 @@ async function checkApproval(
 export async function startServer(config: {
   cdpUrl?: string;
   passphrase?: Buffer;
+  allowedServices?: Set<string>;
 }): Promise<void> {
   const vault = new VaultStore();
-  const rateLimiter = new RateLimiter(vault["db"]);
 
   if (config.passphrase) {
     if (!vault.unlock(config.passphrase)) {
@@ -96,10 +102,18 @@ export async function startServer(config: {
     }
   }
 
-  const approvalGate = new ApprovalGate(vault["db"]);
+  const rateLimiter = vault.createRateLimiter();
+  const approvalGate = vault.createApprovalGate();
   const injector = config.cdpUrl ? new BrowserInjector({ cdpUrl: config.cdpUrl }) : null;
+  const allowedServices = config.allowedServices ?? null; // null = unrestricted
 
-  const cleanupInterval = setInterval(() => approvalGate.cleanup(), 60_000);
+  const cleanupInterval = setInterval(() => {
+    approvalGate.cleanup();
+    if (vault.isIdleLockoutDue()) {
+      vault.lock();
+      audit("vault_idle_locked", { success: true });
+    }
+  }, 60_000);
   process.on("exit", () => clearInterval(cleanupInterval));
 
   const server = new McpServer({ name: "agent-auth", version: "0.1.0" });
@@ -114,18 +128,10 @@ export async function startServer(config: {
     {
       service: z.string().describe("Credential service name (e.g. 'aws-root')"),
       url: z.string().url().describe("Target URL to navigate to"),
-      steps: z
-        .array(z.object({
-          action: z.enum(["fill", "type", "click", "wait", "select"]),
-          selector: z.string().optional(),
-          value: z.string().optional(),
-          delay: z.number().optional(),
-          timeout: z.number().optional(),
-        }))
-        .describe("Browser steps with {{placeholder}} values"),
+      steps: BrowserSteps.describe("Browser steps with {{placeholder}} values"),
     },
     async (args) => {
-      const guardError = guardChecks(vault, rateLimiter, "secure_login", args.service, args.url);
+      const guardError = guardChecks(vault, rateLimiter, "secure_login", args.service, args.url, allowedServices);
       if (guardError) return reply(guardError);
 
       if (!injector) return reply("Browser injector not configured. Set CDP_URL.");
@@ -162,7 +168,9 @@ export async function startServer(config: {
 
         for (const buf of buffersToCleanup) zeroBuffer(buf);
         audit("secure_login", { service: args.service, domain: args.url, success: true });
-        return reply(`Login completed for "${args.service}". Final URL: ${result.finalUrl}`);
+        // Strip query params — credentials injected as query params would otherwise leak here.
+        const safeUrl = (() => { try { const u = new URL(result.finalUrl); return `${u.origin}${u.pathname}`; } catch { return "(unknown)"; } })();
+        return reply(`Login completed for "${args.service}". Final URL: ${safeUrl}`);
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Unknown error";
         audit("secure_login", { service: args.service, domain: args.url, success: false, error: msg });
@@ -184,7 +192,8 @@ export async function startServer(config: {
     async () => {
       if (!vault.isUnlocked()) return reply("Vault is locked.");
 
-      const credentials = vault.listCredentials();
+      const credentials = vault.listCredentials()
+        .filter((c) => allowedServices === null || allowedServices.has(c.service));
       audit("list_credentials", { success: true });
 
       if (credentials.length === 0) {
@@ -219,7 +228,7 @@ export async function startServer(config: {
       jsonField: z.string().optional().describe("JSON field (for 'json_body' injection)"),
     },
     async (args) => {
-      const guardError = guardChecks(vault, rateLimiter, "auth_api", args.service, args.url);
+      const guardError = guardChecks(vault, rateLimiter, "auth_api", args.service, args.url, allowedServices);
       if (guardError) return reply(guardError);
 
       const approvalError = await checkApproval(vault, approvalGate, args.service, args.url);

@@ -18,6 +18,8 @@ import { notify } from "./notify.js";
 const DEFAULT_TTL_SECONDS = 8 * 60 * 60; // 8 hours
 const APPROVAL_TIMEOUT_MS = 50_000; // 50 seconds
 const POLL_INTERVAL_MS = 2_000; // 2 seconds
+const MAX_APPROVAL_ATTEMPTS = 5; // failed guesses before lockout
+const LOCKOUT_DURATION_SECONDS = 30 * 60; // 30 minutes
 
 export class ApprovalGate {
   private db: Database;
@@ -105,36 +107,96 @@ export class ApprovalGate {
   /**
    * Approve a pending request by code.
    * Called by the human via CLI: `agent-auth approve <code>`
+   *
+   * Brute-force protection: 5 failed attempts locks the approval for 30 minutes.
    */
   approve(code: string): boolean {
-    // Find the pending approval with this code
     const rows = this.db
       .query("SELECT key, value FROM meta WHERE key LIKE 'approval:%'")
       .all() as Array<{ key: string; value: string }>;
 
     for (const row of rows) {
-      if (row.value === code) {
-        const approvalId = row.key.replace("approval:", "");
-        const now = Math.floor(Date.now() / 1000);
+      if (!row.key.startsWith("approval:")) continue;
+      const approvalId = row.key.replace("approval:", "");
+      const lockoutKey = `lockout:${approvalId}`;
+      const attemptsKey = `attempts:${approvalId}`;
 
+      // Check lockout
+      const lockoutRow = this.db
+        .query("SELECT value FROM meta WHERE key = ?")
+        .get(lockoutKey) as { value: string } | null;
+
+      if (lockoutRow) {
+        const lockedUntil = parseInt(lockoutRow.value, 10);
+        if (Math.floor(Date.now() / 1000) < lockedUntil) {
+          return false; // Still locked out
+        }
+        // Lockout expired — clear it
+        this.db.run("DELETE FROM meta WHERE key IN (?, ?)", [lockoutKey, attemptsKey]);
+      }
+
+      if (row.value === code) {
+        const now = Math.floor(Date.now() / 1000);
         this.db.run(
           "UPDATE approvals SET approved_at = ?, expires_at = ? WHERE id = ?",
           [now, now + this.ttlSeconds, approvalId]
         );
-        this.db.run("DELETE FROM meta WHERE key = ?", [row.key]);
+        this.db.run("DELETE FROM meta WHERE key IN (?, ?)", [row.key, attemptsKey]);
         return true;
       }
+
+      // Wrong code — track failed attempt
+      const attemptsRow = this.db
+        .query("SELECT value FROM meta WHERE key = ?")
+        .get(attemptsKey) as { value: string } | null;
+      const attempts = attemptsRow ? parseInt(attemptsRow.value, 10) + 1 : 1;
+
+      if (attempts >= MAX_APPROVAL_ATTEMPTS) {
+        const lockedUntil = Math.floor(Date.now() / 1000) + LOCKOUT_DURATION_SECONDS;
+        this.db.run(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+          [lockoutKey, String(lockedUntil)]
+        );
+        this.db.run("DELETE FROM meta WHERE key = ?", [attemptsKey]);
+      } else {
+        this.db.run(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+          [attemptsKey, String(attempts)]
+        );
+      }
+
+      return false;
     }
 
     return false;
   }
 
   /**
-   * Clean up expired approvals.
+   * Clean up expired approvals and their associated lockout/attempt meta keys.
    */
   cleanup(): void {
     const now = Math.floor(Date.now() / 1000);
+
+    // Find expired approval IDs before deleting
+    const expired = this.db
+      .query("SELECT id FROM approvals WHERE expires_at < ?")
+      .all(now) as Array<{ id: string }>;
+
     this.db.run("DELETE FROM approvals WHERE expires_at < ?", [now]);
+
+    // Clean up associated meta entries
+    for (const { id } of expired) {
+      this.db.run(
+        "DELETE FROM meta WHERE key IN (?, ?, ?)",
+        [`approval:${id}`, `lockout:${id}`, `attempts:${id}`]
+      );
+    }
+
+    // Also purge expired lockouts
+    this.db.run(
+      "DELETE FROM meta WHERE key LIKE 'lockout:%' AND CAST(value AS INTEGER) < ?",
+      [now]
+    );
   }
 
   private generateCode(): string {

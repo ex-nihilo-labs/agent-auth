@@ -1,6 +1,6 @@
 import type { VaultStore } from "../vault/store.js";
 import { zeroBuffer } from "../vault/crypto.js";
-import { CredentialError, ValidationError } from "../errors.js";
+import { CredentialError, InjectionError, ValidationError } from "../errors.js";
 
 /**
  * HTTP credential proxy.
@@ -60,6 +60,10 @@ export async function proxyRequest(
     const password = secrets.password?.toString("utf-8") ?? "";
     const username = secrets.username?.toString("utf-8") ?? "";
 
+    // All values that could appear in a response and must be redacted.
+    // Include base64-encoded forms used by basic auth.
+    const secretsToRedact: string[] = [password, username].filter((s) => s.length >= 4);
+
     switch (request.injection) {
       case "bearer":
         headers.set("Authorization", `Bearer ${password}`);
@@ -78,6 +82,8 @@ export async function proxyRequest(
       case "basic": {
         const encoded = Buffer.from(`${username}:${password}`).toString("base64");
         headers.set("Authorization", `Basic ${encoded}`);
+        // The encoded form can appear in error responses (e.g. echoed Authorization header)
+        if (encoded.length >= 4) secretsToRedact.push(encoded);
         break;
       }
 
@@ -104,12 +110,23 @@ export async function proxyRequest(
       method: request.method,
       headers,
       body: ["GET", "HEAD"].includes(request.method.toUpperCase()) ? undefined : body,
+      redirect: "manual",
     });
+
+    // Block redirects — they may lead to off-allowlist domains (SSRF).
+    // Callers should use the final destination URL directly.
+    if (resp.status >= 300 && resp.status < 400) {
+      const location = resp.headers.get("location") ?? "(no Location header)";
+      throw new InjectionError(
+        "ssrf_redirect",
+        `Redirect blocked (${resp.status} → ${location}). Use the final URL directly.`
+      );
+    }
 
     const respBody = await resp.text();
 
-    // Redact any echoed credentials in response
-    const redacted = redactCredentials(respBody, [password, username].filter(Boolean));
+    // Redact credential values from response body, including encoded variants.
+    const redacted = redactCredentials(respBody, secretsToRedact);
 
     const respHeaders: Record<string, string> = {};
     resp.headers.forEach((v, k) => {

@@ -40,7 +40,11 @@ switch (command) {
       }
     }
 
-    await startServer({ cdpUrl, passphrase });
+    const allowedServices = env.AGENT_AUTH_ALLOWED_SERVICES
+      ? new Set(env.AGENT_AUTH_ALLOWED_SERVICES.split(",").map((s) => s.trim()).filter(Boolean))
+      : undefined;
+
+    await startServer({ cdpUrl, passphrase, allowedServices });
     break;
   }
 

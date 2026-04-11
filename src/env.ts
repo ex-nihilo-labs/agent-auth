@@ -16,6 +16,12 @@ const ServeEnvSchema = z.object({
   AGENT_AUTH_PUSHOVER_TOKEN: z.string().optional(),
   /** Pushover user key for approval notifications. */
   AGENT_AUTH_PUSHOVER_USER: z.string().optional(),
+  /**
+   * Comma-separated list of credential service names this server instance may access.
+   * Empty or absent = all services allowed. Use to scope per-agent server processes.
+   * Example: "github,aws-dev" — this instance can only use those two credentials.
+   */
+  AGENT_AUTH_ALLOWED_SERVICES: z.string().optional(),
 });
 
 export type ServeEnv = z.infer<typeof ServeEnvSchema>;

@@ -22,7 +22,9 @@ export type AuditAction =
   | "vault_unlock"
   | "vault_lock"
   | "credential_added"
-  | "credential_removed";
+  | "credential_removed"
+  | "service_blocked"
+  | "vault_idle_locked";
 
 interface AuditEntry {
   timestamp: string;

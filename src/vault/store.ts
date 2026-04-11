@@ -4,6 +4,8 @@ import { chmodSync } from "node:fs";
 import { encrypt, decrypt, deriveKey, zeroBuffer } from "./crypto.js";
 import { getConfigDir, storeKey, loadKey } from "./keychain.js";
 import { VaultError } from "../errors.js";
+import { RateLimiter } from "../security/rate-limiter.js";
+import { ApprovalGate } from "../approval/gate.js";
 
 /**
  * Local encrypted vault backed by SQLite.
@@ -66,8 +68,15 @@ export interface CredentialSecrets {
 export class VaultStore {
   private db: Database;
   private vaultKey: Buffer | null = null;
+  private lastAccessAt: number = Date.now();
+  private readonly idleTimeoutMs: number;
 
-  constructor(dbPath?: string) {
+  /**
+   * @param dbPath - Override vault DB path (for testing).
+   * @param idleTimeoutMs - Lock vault if idle for this many ms (default: 2 hours).
+   */
+  constructor(dbPath?: string, idleTimeoutMs: number = 2 * 60 * 60 * 1000) {
+    this.idleTimeoutMs = idleTimeoutMs;
     const path = dbPath ?? join(getConfigDir(), VAULT_FILE);
     this.db = new Database(path);
     this.db.exec("PRAGMA journal_mode=WAL;");
@@ -105,6 +114,10 @@ export class VaultStore {
     zeroBuffer(passphrase);
   }
 
+  private touchAccess(): void {
+    this.lastAccessAt = Date.now();
+  }
+
   /**
    * Unlock the vault with a passphrase.
    * Derives the key and verifies it against the stored token.
@@ -138,6 +151,7 @@ export class VaultStore {
     }
 
     this.vaultKey = key;
+    this.touchAccess();
     return true;
   }
 
@@ -153,6 +167,24 @@ export class VaultStore {
 
   isUnlocked(): boolean {
     return this.vaultKey !== null;
+  }
+
+  /**
+   * Returns true if the vault is unlocked but has been idle past the timeout.
+   * The server's periodic cleanup should call lock() when this returns true.
+   */
+  isIdleLockoutDue(): boolean {
+    return this.vaultKey !== null && Date.now() - this.lastAccessAt > this.idleTimeoutMs;
+  }
+
+  /** Create a RateLimiter backed by this vault's database. */
+  createRateLimiter(): RateLimiter {
+    return new RateLimiter(this.db);
+  }
+
+  /** Create an ApprovalGate backed by this vault's database. */
+  createApprovalGate(ttlSeconds?: number): ApprovalGate {
+    return new ApprovalGate(this.db, ttlSeconds);
   }
 
   /**
@@ -235,6 +267,7 @@ export class VaultStore {
    */
   resolveSecrets(service: string): CredentialSecrets | null {
     this.requireUnlocked();
+    this.touchAccess();
 
     const row = this.db
       .query(
