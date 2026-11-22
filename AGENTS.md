@@ -3,9 +3,9 @@
 <!-- one-lab:where -->
 ## Where this project lives
 
-- Home: **Mac** — `~/Lab/agent-auth`.
+- Home: **Mac** — `~/Lab/agent-auth`. Not cloned on Poseidon.
 - Source of truth: GitHub `ex-nihilo-labs/agent-auth`. Client or personal data stays out of git (Syncthing over the tailnet).
-- Lab-wide rules and the full table of projects: `ex-nihilo/docs/one-lab-architecture.md`.
+- How the whole Lab works: `ex-nihilo/docs/master-plan.md`. Every `~/Lab` folder: `ex-nihilo/lab/manifest.toml`.
 
 Zero-knowledge credential service for AI agents. MCP server that injects credentials into browsers and HTTP requests without the agent ever seeing them.
 
