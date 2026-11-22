@@ -1,5 +1,12 @@
 # agent-auth
 
+<!-- one-lab:where -->
+## Where this project lives
+
+- Home: **Mac** — `~/Lab/agent-auth`.
+- Source of truth: GitHub `ex-nihilo-labs/agent-auth`. Client or personal data stays out of git (Syncthing over the tailnet).
+- Lab-wide rules and the full table of projects: `ex-nihilo/docs/one-lab-architecture.md`.
+
 Zero-knowledge credential service for AI agents. MCP server that injects credentials into browsers and HTTP requests without the agent ever seeing them.
 
 ## Architecture
